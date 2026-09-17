@@ -21,7 +21,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install --requirement requirements-dev.txt
-      - run: pytest
+      - run: python -m pytest
 
   docker:
     needs: test
