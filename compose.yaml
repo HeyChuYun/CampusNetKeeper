@@ -1,0 +1,14 @@
+services:
+  campusnet-keeper:
+    build: .
+    image: campusnet-keeper:local
+    container_name: campusnet-keeper
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - campusnet-state:/data
+
+volumes:
+  campusnet-state:

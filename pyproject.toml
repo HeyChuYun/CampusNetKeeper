@@ -1,0 +1,13 @@
+[project]
+name = "campusnet-keeper"
+version = "1.0.0"
+description = "GiWiFi campus network connectivity monitor and auto-login service"
+requires-python = ">=3.11"
+dependencies = [
+    "pycryptodome==3.23.0",
+    "requests==2.32.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
