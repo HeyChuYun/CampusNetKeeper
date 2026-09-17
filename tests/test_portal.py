@@ -179,3 +179,36 @@ def test_code_124_confirms_binding_without_immediate_second_login() -> None:
         "http://10.4.0.5/gportal/Web/bind", page.url
     )
     assert client._load_login_page.call_count == 1
+
+
+def test_success_response_follows_portal_completion_url() -> None:
+    html = """
+    <form id="loginForm">
+      <input type="hidden" name="iv" value="1234567890abcdef">
+      <input type="text" name="user_account">
+      <input type="password" name="user_password">
+    </form>
+    """
+    page = Mock(text=html, url="http://10.4.0.5/gportal/web/login")
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.content = json.dumps(
+        {
+            "status": 1,
+            "info": "认证中，请勿关闭当前页面！",
+            "data": "/gportal/web/online?token=test",
+        },
+        ensure_ascii=False,
+    ).encode()
+    session = Mock(headers={}, cookies=object())
+    session.post.return_value = response
+    client = PortalClient(make_settings(), session=session)
+    client._load_login_page = Mock(return_value=page)
+    client._complete_login = Mock()
+
+    result = client.login()
+
+    assert result.success is True
+    client._complete_login.assert_called_once_with(
+        "/gportal/web/online?token=test", page.url
+    )

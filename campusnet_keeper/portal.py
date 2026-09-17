@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 import struct
+import time
 from dataclasses import dataclass
 from http.cookiejar import MozillaCookieJar
 from html.parser import HTMLParser
@@ -295,6 +296,9 @@ class PortalClient:
 
         self._save_cookies()
         if str(payload.get("status")) == "1":
+            completion_url = payload.get("data")
+            if isinstance(completion_url, str) and completion_url.strip():
+                self._complete_login(completion_url, page.url)
             return LoginResult(True, str(payload.get("info") or "login accepted"))
 
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
@@ -327,6 +331,29 @@ class PortalClient:
         elif code in {"40", "114", "152"}:
             message += " (the portal requires interactive account verification or password setup)"
         return LoginResult(False, message, code, retryable=code not in {"40", "114", "122", "152"})
+
+    def _complete_login(self, completion_url: str, portal_page_url: str) -> None:
+        resolved_url = urljoin(portal_page_url, completion_url)
+        parsed_target = urlparse(resolved_url)
+        if parsed_target.scheme not in {"http", "https"} or not parsed_target.hostname:
+            raise PortalProtocolError("portal returned an unsafe completion URL")
+        LOGGER.info(
+            "Completing portal authentication via %s://%s%s",
+            parsed_target.scheme,
+            parsed_target.netloc,
+            parsed_target.path,
+        )
+        time.sleep(4)
+        try:
+            response = self.session.get(
+                resolved_url,
+                allow_redirects=True,
+                timeout=self.settings.request_timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise PortalError(f"portal completion request failed: {exc}") from exc
+        self._save_cookies()
 
     def _replace_session(self, replace_url: str, portal_page_url: str) -> None:
         resolved_url = urljoin(portal_page_url, replace_url)
