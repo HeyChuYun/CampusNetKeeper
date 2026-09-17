@@ -5,8 +5,7 @@ from dataclasses import dataclass
 
 
 DEFAULT_CHECK_URLS = (
-    "http://connectivitycheck.gstatic.com/generate_204",
-    "http://www.msftconnecttest.com/connecttest.txt",
+    "http://www.baidu.com/",
 )
 
 
@@ -42,7 +41,9 @@ class Settings:
     check_urls: tuple[str, ...]
     check_interval: float
     retry_interval: float
+    terminal_retry_interval: float
     request_timeout: float
+    network_interface: str
     allow_session_replace: bool
     state_file: str
     log_level: str
@@ -80,7 +81,11 @@ class Settings:
             check_urls=urls,
             check_interval=_positive_float("CHECK_INTERVAL", 86400),
             retry_interval=_positive_float("RETRY_INTERVAL", 60),
+            terminal_retry_interval=_positive_float(
+                "TERMINAL_RETRY_INTERVAL", 21600
+            ),
             request_timeout=_positive_float("REQUEST_TIMEOUT", 10),
+            network_interface=os.getenv("NETWORK_INTERFACE", "").strip(),
             allow_session_replace=_boolean("ALLOW_SESSION_REPLACE"),
             state_file=os.getenv("STATE_FILE", "/data/cookies.txt").strip(),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),

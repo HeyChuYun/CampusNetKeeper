@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 import threading
+from dataclasses import dataclass
 
 from .config import Settings
 from .portal import PortalClient, PortalError
@@ -13,29 +14,38 @@ from .portal import PortalClient, PortalError
 LOGGER = logging.getLogger(__name__)
 
 
-def run_check(client: PortalClient) -> bool:
+@dataclass(frozen=True, slots=True)
+class CheckOutcome:
+    online: bool
+    retryable: bool = True
+
+
+def run_check(client: PortalClient) -> CheckOutcome:
     if client.is_online():
         LOGGER.info("Internet connection is available")
-        return True
+        return CheckOutcome(True)
 
     LOGGER.warning("Internet connection is unavailable; trying campus login")
     try:
         result = client.login()
     except PortalError as exc:
         LOGGER.error("Campus login failed: %s", exc)
-        return False
+        if client.is_online():
+            LOGGER.info("Internet access is available after the inconclusive login")
+            return CheckOutcome(True)
+        return CheckOutcome(False)
 
     if not result.success:
         suffix = f" [code {result.code}]" if result.code else ""
         LOGGER.error("Campus login was rejected%s: %s", suffix, result.message)
-        return False
+        return CheckOutcome(False, retryable=result.retryable)
 
     LOGGER.info("Campus portal accepted the login: %s", result.message)
     if client.is_online():
         LOGGER.info("Internet access has been restored")
-        return True
+        return CheckOutcome(True)
     LOGGER.warning("Login was accepted, but Internet access is not available yet")
-    return False
+    return CheckOutcome(False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,7 +71,7 @@ def main() -> int:
     client = PortalClient(settings)
 
     if args.once:
-        return 0 if run_check(client) else 1
+        return 0 if run_check(client).online else 1
 
     stop_event = threading.Event()
 
@@ -72,13 +82,20 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
 
     LOGGER.info(
-        "CampusNetKeeper started (normal interval %.0fs, retry interval %.0fs)",
+        "CampusNetKeeper started (normal %.0fs, retry %.0fs, terminal %.0fs)",
         settings.check_interval,
         settings.retry_interval,
+        settings.terminal_retry_interval,
     )
     while not stop_event.is_set():
-        online = run_check(client)
-        delay = settings.check_interval if online else settings.retry_interval
+        outcome = run_check(client)
+        if outcome.online:
+            delay = settings.check_interval
+        elif outcome.retryable:
+            delay = settings.retry_interval
+        else:
+            delay = settings.terminal_retry_interval
+            LOGGER.error("Non-retryable portal response; next check in %.0fs", delay)
         stop_event.wait(delay)
     LOGGER.info("CampusNetKeeper stopped")
     return 0

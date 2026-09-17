@@ -3,15 +3,18 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import socket
+import struct
 import time
 from dataclasses import dataclass
 from http.cookiejar import MozillaCookieJar
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import requests
 from Crypto.Cipher import AES
+from requests.adapters import HTTPAdapter
 
 from .config import Settings
 
@@ -44,6 +47,39 @@ class LoginResult:
     success: bool
     message: str
     code: str = ""
+    retryable: bool = True
+
+
+class SourceAddressAdapter(HTTPAdapter):
+    def __init__(self, source_address: str, *args: Any, **kwargs: Any) -> None:
+        self.source_address = source_address
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(
+        self, connections: int, maxsize: int, block: bool = False, **pool_kwargs: Any
+    ) -> None:
+        pool_kwargs["source_address"] = (self.source_address, 0)
+        super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def interface_ipv4_address(interface: str) -> str:
+    if os.name != "posix":
+        raise PortalProtocolError(
+            "NETWORK_INTERFACE is supported only by the Linux container"
+        )
+    import fcntl
+
+    if not interface or len(interface.encode("utf-8")) > 15:
+        raise PortalProtocolError("NETWORK_INTERFACE is invalid")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as network_socket:
+        request = struct.pack("256s", interface.encode("utf-8"))
+        try:
+            response = fcntl.ioctl(network_socket.fileno(), 0x8915, request)
+        except OSError as exc:
+            raise PortalProtocolError(
+                f"could not resolve IPv4 address for interface {interface}: {exc}"
+            ) from exc
+    return socket.inet_ntoa(response[20:24])
 
 
 class _LoginFormParser(HTMLParser):
@@ -106,6 +142,16 @@ class PortalClient:
                 "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
             }
         )
+        if settings.network_interface:
+            source_address = interface_ipv4_address(settings.network_interface)
+            adapter = SourceAddressAdapter(source_address)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
+            LOGGER.info(
+                "Network requests are bound to %s (%s)",
+                settings.network_interface,
+                source_address,
+            )
         self._configure_cookie_jar()
 
     def _configure_cookie_jar(self) -> None:
@@ -214,7 +260,10 @@ class PortalClient:
                 "network and make sure its captive redirect reaches the container"
             )
 
-        encrypted = encrypt_form(urlencode(fields), self.settings.aes_key, iv)
+        # jQuery.serialize uses encodeURIComponent, which represents spaces as %20.
+        encrypted = encrypt_form(
+            urlencode(fields, quote_via=quote), self.settings.aes_key, iv
+        )
         login_url = urljoin(page.url, "/gportal/Web/loginAction")
         try:
             response = self.session.post(
@@ -224,6 +273,7 @@ class PortalClient:
                     "X-Requested-With": "XMLHttpRequest",
                     "Referer": page.url,
                     "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 },
                 timeout=self.settings.request_timeout,
             )
@@ -252,9 +302,21 @@ class PortalClient:
 
         if code == "124":
             message += " (set ALLOW_SESSION_REPLACE=true to disconnect the old session)"
+        elif code == "122":
+            missing = [
+                name
+                for name in ("sta_port", "sta_vlan", "nas_ip")
+                if not form.value(name)
+            ]
+            detail = ", ".join(missing) if missing else "none"
+            message += (
+                " (the gateway does not support binding this station; "
+                f"missing portal fields: {detail}; ask the network operator to "
+                "enable wired-terminal authentication)"
+            )
         elif code in {"40", "114", "152"}:
             message += " (the portal requires interactive account verification or password setup)"
-        return LoginResult(False, message, code)
+        return LoginResult(False, message, code, retryable=code not in {"40", "114", "122", "152"})
 
     def _replace_session(self, replace_url: str, portal_page_url: str) -> None:
         resolved_url = urljoin(portal_page_url, replace_url)
