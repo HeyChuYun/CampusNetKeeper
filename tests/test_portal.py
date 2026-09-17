@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from unittest.mock import Mock
 
 from Crypto.Cipher import AES
@@ -10,6 +11,7 @@ from campusnet_keeper.main import run_check
 from campusnet_keeper.portal import (
     PortalClient,
     PortalError,
+    decode_json_response,
     encrypt_form,
     parse_login_form,
 )
@@ -99,11 +101,13 @@ def test_code_122_is_non_retryable_and_reports_missing_station_fields() -> None:
     page = Mock(text=html, url="http://10.4.0.5/gportal/web/login")
     response = Mock()
     response.raise_for_status.return_value = None
-    response.json.return_value = {
-        "status": 0,
-        "info": "sta not support bind",
-        "data": {"resultCode": "122"},
-    }
+    response.content = json.dumps(
+        {
+            "status": 0,
+            "info": "sta not support bind",
+            "data": {"resultCode": "122"},
+        }
+    ).encode()
     session = Mock(headers={}, cookies=object())
     session.post.return_value = response
     client = PortalClient(make_settings(), session=session)
@@ -125,3 +129,53 @@ def test_inconclusive_login_rechecks_connectivity() -> None:
 
     assert outcome.online is True
     assert client.is_online.call_count == 2
+
+
+def test_decode_json_response_falls_back_to_gb18030() -> None:
+    response = Mock()
+    response.content = json.dumps(
+        {"status": 0, "info": "操作太频繁，请5分钟后重试！"},
+        ensure_ascii=False,
+    ).encode("gb18030")
+
+    payload = decode_json_response(response)
+
+    assert payload["info"] == "操作太频繁，请5分钟后重试！"
+
+
+def test_code_124_confirms_binding_without_immediate_second_login() -> None:
+    html = """
+    <form id="loginForm">
+      <input type="hidden" name="iv" value="1234567890abcdef">
+      <input type="text" name="user_account">
+      <input type="password" name="user_password">
+    </form>
+    """
+    page = Mock(text=html, url="http://10.4.0.5/gportal/web/login")
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.content = json.dumps(
+        {
+            "status": 0,
+            "info": "是否绑定当前设备？",
+            "data": {
+                "resultCode": "124",
+                "resultData": "http://10.4.0.5/gportal/Web/bind",
+            },
+        },
+        ensure_ascii=False,
+    ).encode()
+    session = Mock(headers={}, cookies=object())
+    session.post.return_value = response
+    client = PortalClient(make_settings(), session=session)
+    client._load_login_page = Mock(return_value=page)
+    client._replace_session = Mock()
+
+    result = client.login()
+
+    assert result.success is True
+    assert result.message == "device binding request accepted"
+    client._replace_session.assert_called_once_with(
+        "http://10.4.0.5/gportal/Web/bind", page.url
+    )
+    assert client._load_login_page.call_count == 1

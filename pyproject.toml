@@ -1,6 +1,6 @@
 [project]
 name = "campusnet-keeper"
-version = "1.1.1"
+version = "1.1.2"
 description = "GiWiFi campus network connectivity monitor and auto-login service"
 requires-python = ">=3.11"
 dependencies = [

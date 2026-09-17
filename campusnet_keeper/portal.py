@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import socket
 import struct
-import time
 from dataclasses import dataclass
 from http.cookiejar import MozillaCookieJar
 from html.parser import HTMLParser
@@ -130,6 +130,17 @@ def encrypt_form(encoded_form: str, key: str, iv: str) -> str:
         payload += b"\0" * (AES.block_size - remainder)
     encrypted = AES.new(key_bytes, AES.MODE_CBC, iv_bytes).encrypt(payload)
     return base64.b64encode(encrypted).decode("ascii")
+
+
+def decode_json_response(response: requests.Response) -> dict[str, Any]:
+    try:
+        text = response.content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = response.content.decode("gb18030")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("portal returned a non-object JSON response")
+    return payload
 
 
 class PortalClient:
@@ -278,7 +289,7 @@ class PortalClient:
                 timeout=self.settings.request_timeout,
             )
             response.raise_for_status()
-            payload: dict[str, Any] = response.json()
+            payload = decode_json_response(response)
         except (requests.RequestException, ValueError) as exc:
             raise PortalError(f"portal login request failed: {exc}") from exc
 
@@ -297,8 +308,7 @@ class PortalClient:
         ):
             replace_url = str(data.get("resultData") or "")
             self._replace_session(replace_url, page.url)
-            time.sleep(1)
-            return self.login(_replacement_attempted=True)
+            return LoginResult(True, "device binding request accepted")
 
         if code == "124":
             message += " (set ALLOW_SESSION_REPLACE=true to disconnect the old session)"
